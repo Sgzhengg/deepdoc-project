@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # Qdrant 向量数据库
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: deepdoc-qdrant
+    ports:
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - ./data/qdrant:/qdrant/storage:cached
+    environment:
+      - QDRANT__LOG_LEVEL=INFO
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: unless-stopped
+    networks:
+      - deepdoc-network
+
+  # 后端 API 服务 (可选，如果需要容器化部署)
+  # backend:
+  #   build:
+  #     context: ../backend
+  #     dockerfile: Dockerfile
+  #   container_name: deepdoc-backend
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - ../backend:/app
+  #   environment:
+  #     - QDRANT_HOST=qdrant
+  #     - QDRANT_PORT=6333
+  #     - DEVICE=cuda
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   depends_on:
+  #     - qdrant
+  #   restart: unless-stopped
+  #   networks:
+  #     - deepdoc-network
+
+networks:
+  deepdoc-network:
+    driver: bridge
+
+volumes:
+  qdrant-data:
+    driver: local

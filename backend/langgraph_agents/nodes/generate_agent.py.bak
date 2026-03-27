@@ -1,0 +1,401 @@
+"""
+GenerateAgent - 生成智能体
+负责基于分析结果生成最终答案
+"""
+
+import logging
+from typing import Dict, Any
+from langchain_ollama import ChatOllama
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+
+from ..state import AgentState
+
+logger = logging.getLogger(__name__)
+
+# 知识库状态查询的关键词
+KNOWLEDGE_BASE_KEYWORDS = [
+    "知识库",
+    "有什么内容",
+    "有哪些文档",
+    "文档列表",
+    "文件列表",
+    "包含什么",
+    "有什么文件",
+    "查看知识库",
+    "查看文档"
+]
+
+
+class GenerateAgent:
+    """
+    生成Agent
+
+    功能：
+    1. 上下文整合：整合检索结果和推理分析
+    2. 答案生成：生成清晰、准确的答案
+    3. 来源引用：标注数据来源
+    4. 格式化：优化答案的可读性
+    """
+
+    def __init__(self, llm: ChatOllama):
+        """
+        初始化GenerateAgent
+
+        Args:
+            llm: LLM实例
+        """
+        self.llm = llm
+        self.system_prompt = self._build_system_prompt()
+
+    def _build_system_prompt(self) -> str:
+        """构建系统提示词"""
+        return """你是DeepDoc系统的答案生成专家。你的任务是基于检索到的文档生成清晰、准确的答案。
+
+## 答案格式要求：
+
+你的答案必须严格按照以下格式输出：
+
+```
+【直接回答】
+[明确的答案内容]
+
+【详细说明】
+[必要的解释和说明]
+
+【数据来源】
+- 12月放号独立部分-酬金.xlsx
+- 12月放号独立部分（政策-操作-ID）.xlsx
+```
+
+## 重要约束：
+
+1. **不要添加"建议"部分** - 禁止生成任何建议内容
+2. **数据来源必须使用上下文中提供的文档名称** - 在"## 数据来源文档名称"部分会明确告诉你应该使用哪些文档名称，请直接复制使用，不要修改
+3. **只列出实际引用的文档** - 答案中引用了哪个文档就列出哪个
+4. **不要编造文档名** - 只使用检索到的文档名称
+
+## 业务规则匹配要求（非常重要）：
+
+当涉及渠道政策、酬金、补贴等业务问题时，必须：
+
+1. **仔细识别问题中的关键条件**：
+   - 渠道类型：非区域服务商/区域服务商/委托/带店厅/宽带业务/微格渠道/终端渠道/厂家渠道
+   - 网点星级：1星-6星（星级服补与渠道类型服补不同）
+   - 套餐类型和价格
+   - 时间周期（T3-T12等）
+
+2. **不要混淆不同渠道的补贴标准**：
+   - "委托、带店厅、宽带业务、微格渠道、终端渠道、厂家渠道"的35元/户标准 ≠ 星级服补
+   - 星级服补计算公式：折后价 × 1.5 × 15%，且有最高限额
+   - 不同星级有不同门槛值
+
+3. **先确定匹配的业务场景，再查找对应的计算规则**
+
+请严格按照此格式回答，不要添加其他部分。
+"""
+
+    async def __call__(self, state: AgentState) -> AgentState:
+        """
+        生成答案
+
+        Args:
+            state: 当前状态
+
+        Returns:
+            更新后的状态
+        """
+        query = state["user_query"]
+        intent = state["intent"]
+        docs = state["retrieved_docs"]
+        analysis = state.get("analysis_results", {})
+        reasoning_steps = state.get("reasoning_steps", [])
+
+        logger.info(f"GenerateAgent: 生成答案 - intent={intent}")
+
+        try:
+            # 检查是否是知识库状态查询
+            is_knowledge_base_query = self._is_knowledge_base_query(query)
+
+            # 识别业务场景（用于服补、酬金类问题）
+            business_scenario = self._identify_business_scenario(query)
+
+            # 构建上下文
+            context = self._build_context(docs, analysis, reasoning_steps, is_knowledge_base_query, business_scenario)
+
+            # 使用LLM生成答案
+            answer = await self._generate_answer(query, context, intent)
+
+            state["draft_answer"] = answer
+            state["final_answer"] = answer
+
+            # 计算置信度
+            confidence = self._calculate_confidence(state)
+            state["confidence"] = confidence
+
+            # 递增迭代计数器（regenerate循环）
+            state["current_iteration"] = state.get("current_iteration", 0) + 1
+
+            logger.info(f"GenerateAgent: 答案生成完成, 置信度={confidence:.2f}")
+
+        except Exception as e:
+            logger.error(f"GenerateAgent错误: {e}")
+            # 降级：返回简单的答案
+            state["draft_answer"] = self._generate_simple_answer(docs, analysis)
+            state["final_answer"] = state["draft_answer"]
+            state["confidence"] = 0.5
+
+        return state
+
+    def _identify_business_scenario(self, query: str) -> dict:
+        """识别业务场景"""
+        scenario = {
+            "is_service_subsidy": False,  # 是否为服补问题
+            "is_commission": False,        # 是否为酬金问题
+            "channel_type": None,          # 渠道类型
+            "star_level": None,            # 星级
+            "key_terms": []
+        }
+
+        # 识别关键词
+        service_subsidy_keywords = ["服补", "服务运营补贴", "服务补贴"]
+        commission_keywords = ["酬金", "提成", "分成"]
+
+        # 35元/户标准的特定渠道类型（非星级服补）
+        channel_35_keywords = {
+            "委托": "委托",
+            "带店厅": "带店厅",
+            "宽带业务": "宽带业务",
+            "微格渠道": "微格渠道",
+            "终端渠道": "终端渠道",
+            "厂家渠道": "厂家渠道"
+        }
+
+        # 区域服务商类型（可能与星级服补相关）
+        regional_keywords = {
+            "非区域服务商": "非区域服务商",
+            "区域服务商": "区域服务商"
+        }
+
+        star_level_keywords = ["1星", "2星", "3星", "4星", "5星", "6星", "星A", "星B", "星C"]
+
+        # 检查是否为服补问题
+        if any(keyword in query for keyword in service_subsidy_keywords):
+            scenario["is_service_subsidy"] = True
+            scenario["key_terms"].append("服补问题")
+
+        # 检查是否为酬金问题
+        if any(keyword in query for keyword in commission_keywords):
+            scenario["is_commission"] = True
+            scenario["key_terms"].append("酬金问题")
+
+        # 识别星级
+        for star in star_level_keywords:
+            if star in query:
+                scenario["star_level"] = star
+                scenario["key_terms"].append(f"星级:{star}")
+                break
+
+        # 识别渠道类型（先检查35元/户的特定渠道）
+        is_35_yuan_channel = False
+        for keyword, channel_type in channel_35_keywords.items():
+            if keyword in query:
+                scenario["channel_type"] = channel_type
+                scenario["key_terms"].append(f"渠道类型:{channel_type}(35元/户标准)")
+                is_35_yuan_channel = True
+                break
+
+        # 如果是35元/户渠道，不要标记为星级服补
+        if not is_35_yuan_channel:
+            # 检查区域服务商类型（这些可能与星级服补相关）
+            for keyword, channel_type in regional_keywords.items():
+                if keyword in query:
+                    scenario["regional_type"] = channel_type  # 单独存储，不作为channel_type
+                    scenario["key_terms"].append(f"区域类型:{channel_type}")
+                    break
+
+        # 重要：如果有星级且不是35元/户的特定渠道，则是星级服补问题
+        if scenario["star_level"] and not is_35_yuan_channel:
+            scenario["is_star_subsidy"] = True
+            scenario["key_terms"].append("星级服补（使用星级计算公式，非35元/户标准）")
+
+        return scenario
+
+    def _is_knowledge_base_query(self, query: str) -> bool:
+        """检查是否是知识库状态查询"""
+        query_lower = query.lower()
+        return any(keyword in query for keyword in KNOWLEDGE_BASE_KEYWORDS)
+
+    def _build_context(
+        self,
+        docs: list,
+        analysis: dict,
+        reasoning_steps: list,
+        is_knowledge_base_query: bool = False,
+        business_scenario: dict = None
+    ) -> str:
+        """构建上下文"""
+        context_parts = []
+
+        # 添加业务场景识别（重要！）
+        if business_scenario and business_scenario.get("key_terms"):
+            context_parts.append("## 业务场景识别\n")
+            context_parts.append(f"问题类型: {', '.join(business_scenario.get('key_terms', []))}\n")
+
+            # 如果是星级服补问题，添加特别说明
+            if business_scenario.get("is_star_subsidy"):
+                context_parts.append("⚠️⚠️⚠️ 重要：这是星级服补问题！⚠️⚠️⚠️")
+                context_parts.append("星级服补计算公式: 折后价 × 1.5 × 15%，且有最高限额")
+                context_parts.append("门槛值是星级（如6星），不是金额！")
+                context_parts.append("严禁使用'委托、带店厅、宽带业务、微格渠道、终端渠道、厂家渠道'的35元/户标准\n")
+
+        # 如果是知识库状态查询，添加完整文档列表
+        if is_knowledge_base_query:
+            context_parts.append("## 知识库文档列表\n")
+            doc_list = self._get_document_list()
+
+            if doc_list:
+                context_parts.append(f"知识库中共有 {len(doc_list)} 个文档：\n")
+                for i, doc_info in enumerate(doc_list, 1):
+                    filename = doc_info.get("filename", "unknown")
+                    ingested_at = doc_info.get("ingested_at", "")
+                    chunk_count = doc_info.get("chunk_count", 0)
+                    mime_type = doc_info.get("mime_type", "")
+
+                    context_parts.append(f"{i}. **文件名**: {filename}")
+                    if ingested_at:
+                        context_parts.append(f"   - 入库时间: {ingested_at}")
+                    if chunk_count:
+                        context_parts.append(f"   - 分块数量: {chunk_count}")
+                    if mime_type:
+                        context_parts.append(f"   - 文件类型: {mime_type}")
+                    context_parts.append("")
+            else:
+                context_parts.append("知识库当前为空，没有找到任何文档。\n")
+
+        # 提取实际的文档名称（用于"数据来源"部分）
+        actual_doc_names = set()
+        if docs:
+            for doc in docs:
+                source = doc.get("source_document", "")
+                if source:
+                    actual_doc_names.add(source)
+
+        # 添加检索到的文档内容
+        if docs:
+            context_parts.append("## 检索到的相关文档\n")
+            for i, doc in enumerate(docs[:5]):
+                text = doc.get("text", "")
+                source = doc.get("source_document", "")
+                score = doc.get("score", 0)
+                context_parts.append(f"【{source}】(相关度:{score:.2f})\n{text[:800]}")
+
+        # 添加分析结果
+        if analysis:
+            context_parts.append("\n## 分析结果\n")
+            if analysis.get("type"):
+                context_parts.append(f"分析类型: {analysis['type']}")
+            if analysis.get("key_points"):
+                context_parts.append("关键点:")
+                for point in analysis["key_points"]:
+                    context_parts.append(f"  - {point}")
+
+        # 添加数据来源文档名称列表（重要！）
+        if actual_doc_names:
+            context_parts.append("\n## 数据来源文档名称\n")
+            context_parts.append("在回答的【数据来源】部分，必须使用以下文档名称（不要修改）：\n")
+            for doc_name in sorted(actual_doc_names):
+                context_parts.append(f"- {doc_name}")
+
+        return "\n".join(context_parts)
+
+    async def _generate_answer(
+        self,
+        query: str,
+        context: str,
+        intent: str
+    ) -> str:
+        """使用LLM生成答案"""
+        messages = [
+            SystemMessage(content=self.system_prompt),
+            HumanMessage(content=f"""用户查询：{query}
+
+{context}
+
+请基于以上信息生成答案。""")
+        ]
+
+        response = await self.llm.ainvoke(messages)
+        return response.content
+
+    def _get_document_list(self) -> list:
+        """获取知识库中的所有文档列表"""
+        try:
+            from vector_storage import VectorStorage
+            vector_storage = VectorStorage()
+            if vector_storage.connect():
+                return vector_storage.list_all_documents()
+            return []
+        except Exception as e:
+            logger.error(f"获取文档列表失败: {e}")
+            return []
+
+    def _generate_simple_answer(self, docs: list, analysis: dict) -> str:
+        """生成简单答案（降级方案）"""
+        if not docs:
+            # 尝试获取文档列表
+            doc_list = self._get_document_list()
+            if doc_list:
+                parts = ["【知识库文档列表】\n"]
+                parts.append(f"知识库中共有 {len(doc_list)} 个文档：\n")
+                for i, doc_info in enumerate(doc_list, 1):
+                    filename = doc_info.get("filename", "unknown")
+                    ingested_at = doc_info.get("ingested_at", "")
+                    chunk_count = doc_info.get("chunk_count", 0)
+
+                    parts.append(f"{i}. **{filename}**")
+                    if ingested_at:
+                        parts.append(f"   - 入库时间: {ingested_at}")
+                    if chunk_count:
+                        parts.append(f"   - 分块数量: {chunk_count}")
+                    parts.append("")
+
+                return "\n".join(parts)
+
+            return """【知识库状态】
+
+当前知识库为空或向量数据库未连接。无法检索到相关文档。
+
+请先上传文档到知识库后再进行查询。"""
+
+        answer_parts = ["根据检索到的信息："]
+
+        # 添加文档内容
+        for i, doc in enumerate(docs[:3]):
+            text = doc.get("text", "")
+            if text:
+                answer_parts.append(f"\n{i+1}. {text[:300]}...")
+
+        return "\n".join(answer_parts)
+
+    def _calculate_confidence(self, state: AgentState) -> float:
+        """计算答案置信度"""
+        # 因素1: 检索质量
+        retrieval_quality = state.get("retrieval_quality", 0.0)
+
+        # 因素2: 文档数量
+        doc_count = len(state.get("retrieved_docs", []))
+        doc_factor = min(doc_count / 3.0, 1.0)
+
+        # 因素3: 检索分数
+        scores = state.get("retrieval_scores", [])
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+
+        # 综合计算
+        confidence = (retrieval_quality * 0.4 + doc_factor * 0.3 + avg_score * 0.3)
+
+        return min(confidence, 1.0)
+
+
+def create_generate_agent(llm: ChatOllama) -> GenerateAgent:
+    """创建GenerateAgent实例"""
+    return GenerateAgent(llm=llm)

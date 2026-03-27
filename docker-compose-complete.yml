@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # ========== FastAPI Backend (检索服务) ==========
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: deepdoc-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - JWT_SECRET_KEY=your-secret-key-change-in-production
+      - LLM_BASE_URL=http://ollama:11434
+      # ========== 双模型配置 ==========
+      - USE_DUAL_MODEL=true
+      - LLM_MODEL_7B=qwen2.5:7b
+      - LLM_MODEL_14B=qwen2.5:14b
+      - COMPLEXITY_THRESHOLD=0.6
+      - ENABLE_14B=true
+      # ========== 单模型降级配置（如果双模型初始化失败）==========
+      - LLM_MODEL=qwen2.5:7b
+      - LLM_TIMEOUT=300
+      - LLM_TEMPERATURE=0.3
+      - LLM_MAX_TOKENS=2000
+      - OLLAMA_NUM_CTX=4096
+      - OLLAMA_NUM_GPU=99
+      - OLLAMA_NUM_THREAD=8
+    volumes:
+      - model_cache:/root/.cache
+      - ./data:/app/data
+    depends_on:
+      - qdrant
+      - ollama
+    networks:
+      - deepdoc-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ========== Qdrant (向量数据库) ==========
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: deepdoc-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - deepdoc-network
+
+  # ========== Ollama (LLM 服务) ==========
+  ollama:
+    image: ollama/ollama:latest
+    container_name: deepdoc-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_NUM_GPU=99  # 使用所有可用的 GPU 层
+      - OLLAMA_NUM_THREAD=8  # RTX 4090 多线程优化
+    networks:
+      - deepdoc-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # 性能优化配置
+    # 已安装模型: qwen2.5:7b
+
+networks:
+  deepdoc-network:
+    driver: bridge
+
+volumes:
+  qdrant_data:
+    driver: local
+  ollama_data:
+    driver: local
+  model_cache:
+    driver: local

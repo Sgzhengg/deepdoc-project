@@ -1,0 +1,99 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+*.log.*
+logs/
+*.log.*
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+*.cache
+.cache/
+
+# Model files (too large)
+models/*.bin
+models/*.gguf
+models/*.safetensors
+!models/.gitkeep
+
+# Ollama
+.ollama/models/blobs/*
+!ollama/models/manifests
+
+# Test files
+test_*.py
+!test_timeout_fix.py
+
+# Backup files
+*.backup
+*.bak
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Project specific
+backend/output/
+backend/storage/uploads/*
+!backend/storage/.gitkeep
+backend/.env
+ollama_clean.log
+gpu_monitor.log
