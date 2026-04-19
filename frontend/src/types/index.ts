@@ -79,6 +79,7 @@ export interface ChatRequest {
   message: string;
   conversationId?: string;
   sessionId?: string;
+  attachment_ids?: string[];
 }
 
 // 聊天响应

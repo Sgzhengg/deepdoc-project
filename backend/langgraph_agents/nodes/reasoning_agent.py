@@ -68,17 +68,34 @@ class ReasoningAgent:
             # 使用 operator.add 时，只返回这个节点添加的新步骤
             state["reasoning_steps"] = [f"🧠 推理完成: {result.get('analysis', {}).get('type', 'general')}"]
 
-            # 构建数据来源
+            # 构建数据来源（修复：添加 filename 字段）
             sources = []
             for i, doc in enumerate(docs[:3]):
+                # 获取文档名称（优先使用 filename，其次 source_document，最后使用 id）
+                doc_name = (
+                    doc.get("metadata", {}).get("filename") or
+                    doc.get("source_document") or
+                    doc.get("filename") or
+                    f"文档{i+1}"
+                )
                 sources.append({
+                    "id": doc.get("id", f"doc_{i}"),
+                    "filename": doc_name,
                     "type": "document",
                     "content": doc.get("text", "")[:200] + "...",
-                    "score": state["retrieval_scores"][i] if i < len(state["retrieval_scores"]) else 0.0
+                    "score": state["retrieved_scores"][i] if i < len(state["retrieved_scores"]) else 0.0
                 })
 
             for tr in table_results[:2]:
+                table_name = (
+                    tr.get("metadata", {}).get("source_document") or
+                    tr.get("source_document") or
+                    tr.get("filename") or
+                    f"表格{len(sources)+1}"
+                )
                 sources.append({
+                    "id": f"table_{len(sources)}",
+                    "filename": table_name,
                     "type": "table",
                     "content": tr.get("answer", "")[:200] + "...",
                     "confidence": tr.get("confidence", 0.0),

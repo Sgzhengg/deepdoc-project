@@ -7,10 +7,14 @@ GenerateAgent - 答案生成智能体
 - 无硬编码业务规则
 - 依赖文档内容和 LLM 理解能力
 - 保持系统泛化能力
+
+[Karpathy Loop 接入] 使用 optimization_surface.py 的 LANGGRAPH_PROMPTS
 """
 
 import logging
 import re
+import sys
+import os
 from typing import Dict, Any, List
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -18,6 +22,24 @@ from ..state import AgentState
 
 # 定义logger（必须在任何使用logger的代码之前）
 logger = logging.getLogger(__name__)
+
+# ============== Karpathy Loop: 接入优化表面 ==============
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+try:
+    from optimization_surface import (
+        get_optimization_config,
+        LANGGRAPH_PROMPTS
+    )
+    OPTIMIZATION_SURFACE_AVAILABLE = True
+    logger.info("✅ [Karpathy Loop] GenerateAgent: optimization_surface.py 已加载")
+except ImportError as e:
+    OPTIMIZATION_SURFACE_AVAILABLE = False
+    logger.warning(f"⚠️ [Karpathy Loop] GenerateAgent: optimization_surface.py 未找到 - {e}")
+    LANGGRAPH_PROMPTS = {}
+# ==============================================================
 
 # 导入优化的提示词服务
 try:
@@ -288,9 +310,17 @@ class GenerateAgent:
         """
         构建系统提示词（优化版或默认版）
 
+        [Karpathy Loop] 优先使用 optimization_surface.py 的 LANGGRAPH_PROMPTS
+
         Args:
             use_optimized: 是否使用优化提示词，None时自动检测
         """
+        # ============== Karpathy Loop: 使用优化表面的 Prompt ==============
+        if OPTIMIZATION_SURFACE_AVAILABLE and "answer_generator" in LANGGRAPH_PROMPTS:
+            # 使用优化表面的答案生成器提示词
+            return LANGGRAPH_PROMPTS["answer_generator"]
+        # ==============================================================
+
         # 自动检测是否使用优化提示词
         if use_optimized is None:
             use_optimized = USE_OPTIMIZED_PROMPTS
@@ -377,11 +407,13 @@ class GenerateAgent:
         original_query = state["user_query"]
         intent = state["intent"]
         docs = state["retrieved_docs"]
+        table_results = state.get("table_results", [])  # 获取表格查询结果
         analysis = state.get("analysis_results", {})
         reasoning_steps = state.get("reasoning_steps", [])
         chat_history = state.get("chat_history", [])
 
         logger.info(f"GenerateAgent: 生成答案 - intent={intent}, query={query}")
+        logger.info(f"GenerateAgent: 文档数={len(docs)}, 表格结果数={len(table_results)}")
 
         # 检查是否是知识库状态查询
         is_knowledge_base_query = self._is_knowledge_base_query(query)
@@ -406,7 +438,8 @@ class GenerateAgent:
                 docs, analysis, reasoning_steps, is_knowledge_base_query,
                 original_query=original_query,
                 is_followup=is_followup,
-                chat_history=chat_history
+                chat_history=chat_history,
+                table_results=table_results  # 传入表格查询结果
             )
 
             # 使用LLM生成答案
@@ -677,10 +710,26 @@ class GenerateAgent:
         is_knowledge_base_query: bool,
         original_query: str = None,
         is_followup: bool = False,
-        chat_history: list = None
+        chat_history: list = None,
+        table_results: list = None
     ) -> str:
-        """构建上下文（增强版 - 约束条件 + 表格解析 + 优化格式化 + 枚举增强 + 追问增强）"""
+        """构建上下文（增强版 - 约束条件 + 表格解析 + 优化格式化 + 枚举增强 + 追问增强 + 表格查询结果）"""
         context_parts = []
+
+        # 添加表格查询结果（在文档内容之前，优先级更高）
+        if table_results:
+            context_parts.append("\n## 表格查询结果\n")
+            for tr in table_results[:5]:
+                answer = tr.get('answer', '')
+                source = tr.get('source_table', 'unknown')
+                explanation = tr.get('explanation', '')
+                context_parts.append(f"答案: {answer}")
+                if source:
+                    context_parts.append(f"来源表格: {source}")
+                if explanation:
+                    context_parts.append(f"说明: {explanation}")
+                context_parts.append("")
+            logger.info(f"✅ 已添加 {len(table_results)} 个表格查询结果到上下文")
 
         # Phase 1: 提取约束条件
         constraints_text = ""
@@ -1037,6 +1086,16 @@ class GenerateAgent:
         for attempt in range(max_retries):
             try:
                 logger.info(f"GenerateAgent: 尝试LLM连接 (第{attempt + 1}次)...")
+
+                # 打印上下文长度用于诊断
+                logger.info(f"GenerateAgent: context长度={len(context)} 字符")
+                print(f"🔍 [诊断] context长度={len(context)} 字符")
+                if "表格查询结果" in context:
+                    logger.info("GenerateAgent: context包含表格查询结果 ✓")
+                    print("🔍 [诊断] context包含表格查询结果 ✓")
+                else:
+                    logger.warning("GenerateAgent: context不包含表格查询结果 ✗")
+                    print("🔍 [诊断] context不包含表格查询结果 ✗")
 
                 # 一次性生成完整答案（两段式）
                 user_prompt = f"""请基于以下文档内容回答用户问题，使用列表格式。

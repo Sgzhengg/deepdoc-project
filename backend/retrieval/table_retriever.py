@@ -76,11 +76,11 @@ class TableRetriever:
 
             query_vector = embedding_service.embed_text(query)
 
-            # 执行向量搜索
+            # 执行向量搜索（方案2优化：降低阈值从0.25到0.05）
             chunks = self.vector_storage.search(
                 query_vector=query_vector,
                 top_k=top_k,
-                score_threshold=0.25  # 降低阈值以获取更多相关内容
+                score_threshold=0.05  # 降低阈值以获取更多相关内容
             )
 
             return chunks
@@ -190,8 +190,10 @@ class TableRetriever:
 
         # 返回合并后的表格
         return {
+            'id': chunks[0].get('id', f"table_{hash(merged_text)}"),  # 保留原始ID或生成新ID
             'text': merged_text,
             'score': avg_score,
+            'search_type': 'table',  # 标记为表格检索结果
             'metadata': {
                 'source_document': chunks[0].get('metadata', {}).get('source_document', 'unknown'),
                 'chunk_count': len(chunks),

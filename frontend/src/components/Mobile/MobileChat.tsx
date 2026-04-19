@@ -32,7 +32,6 @@ const MobileChat: React.FC = () => {
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(conversationId);
 
   const [inputValue, setInputValue] = useState('');
-  const [expandedReasoning, setExpandedReasoning] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -144,18 +143,6 @@ const MobileChat: React.FC = () => {
     }
   };
 
-  const toggleReasoning = (messageId: string) => {
-    setExpandedReasoning((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(messageId)) {
-        newSet.delete(messageId);
-      } else {
-        newSet.add(messageId);
-      }
-      return newSet;
-    });
-  };
-
   const formatTimestamp = (timestamp: string) => {
     return new Date(timestamp).toLocaleTimeString('zh-CN', {
       hour: '2-digit',
@@ -202,26 +189,6 @@ const MobileChat: React.FC = () => {
                 {/* AI消息的额外信息 */}
                 {message.role === 'assistant' && (
                   <div className="bubble-footer">
-                    {/* 推理过程 */}
-                    {message.reasoning && message.reasoning.length > 0 && (
-                      <div>
-                        <button
-                          onClick={() => toggleReasoning(message.id)}
-                          className="reasoning-toggle"
-                        >
-                          <span>🧠 推理过程</span>
-                          <span>{expandedReasoning.has(message.id) ? '▼' : '▶'}</span>
-                        </button>
-                        {expandedReasoning.has(message.id) && (
-                          <div className="reasoning-content">
-                            {message.reasoning.map((step, index) => (
-                              <div key={index} className="reasoning-step">{step}</div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
                     {/* 时间戳 */}
                     <div className="bubble-time">{formatTimestamp(message.timestamp)}</div>
                   </div>

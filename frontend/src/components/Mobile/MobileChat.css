@@ -138,33 +138,6 @@
   border-top: 1px solid #3a3a5a;
 }
 
-/* 推理过程切换 */
-.reasoning-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 4px 0;
-  background: transparent;
-  border: none;
-  color: #60a5fa;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.reasoning-content {
-  margin-top: 8px;
-  padding: 8px;
-  background-color: #1a1a2e;
-  border-radius: 8px;
-}
-
-.reasoning-step {
-  font-size: 11px;
-  color: #808080;
-  padding: 2px 0;
-}
-
 .bubble-time {
   font-size: 11px;
   color: #606060;

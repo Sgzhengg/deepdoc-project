@@ -11,7 +11,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0', // 允许远程访问
-    port: 3000,
+    port: 3001,
     strictPort: true,
     allowedHosts: [
       '1203862ikgl90.vicp.fun',

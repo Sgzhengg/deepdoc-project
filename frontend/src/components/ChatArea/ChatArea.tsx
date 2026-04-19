@@ -1,8 +1,31 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip } from 'lucide-react';
+import { Send, Paperclip, X, FileText, Image, FileSpreadsheet } from 'lucide-react';
 import { useStore } from '@/store/useStore';
-import { chatApi } from '@/services/api';
+import { chatApi, attachmentApi } from '@/services/api';
 import type { Message } from '@/types';
+
+interface Attachment {
+  attachment_id: string;
+  filename: string;
+  file_type: string;
+  file_size: number;
+}
+
+// 根据文件类型获取图标
+const getFileIcon = (fileType: string) => {
+  if (fileType.includes('pdf')) return <FileText className="text-red-500" />;
+  if (fileType.includes('image')) return <Image className="text-blue-500" />;
+  if (fileType.includes('sheet') || fileType.includes('excel')) return <FileSpreadsheet className="text-green-500" />;
+  if (fileType.includes('word') || fileType.includes('document')) return <FileText className="text-blue-600" />;
+  return <Paperclip className="text-gray-400" />;
+};
+
+// 格式化文件大小
+const formatFileSize = (bytes: number) => {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+};
 
 const ChatArea: React.FC = () => {
   const {
@@ -20,10 +43,12 @@ const ChatArea: React.FC = () => {
   } = useStore();
 
   const [inputValue, setInputValue] = useState('');
-  const [expandedReasoning, setExpandedReasoning] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [loadingConversation, setLoadingConversation] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
 
   // 监听当前会话 ID 变化，加载历史消息
   useEffect(() => {
@@ -72,11 +97,17 @@ const ChatArea: React.FC = () => {
     setInputValue('');
     setLoading(true);
 
+    // 准备附件ID列表
+    const attachmentIds = attachments.map(att => att.attachment_id);
+
     try {
       console.log('发送消息:', messageToSend);
+      console.log('附件列表:', attachmentIds);
+
       const response = await chatApi.sendMessage({
         message: messageToSend,
         session_id: currentConversationId || undefined,
+        attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
       });
 
       console.log('收到响应:', response);
@@ -95,6 +126,9 @@ const ChatArea: React.FC = () => {
         console.log('助手消息:', assistantMessage);
         addMessage(assistantMessage);
         console.log('消息已添加');
+
+        // 清空附件列表（消息发送后）
+        setAttachments([]);
 
         // 更新会话列表（如果返回了 session_id）
         if (response.session_id && response.session_id !== currentConversationId) {
@@ -147,16 +181,75 @@ const ChatArea: React.FC = () => {
     }
   };
 
-  const toggleReasoning = (messageId: string) => {
-    setExpandedReasoning((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(messageId)) {
-        newSet.delete(messageId);
+  const handleFileUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // 检查文件类型
+    const allowedTypes = [
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'text/plain',
+      'image/jpeg',
+      'image/png'
+    ];
+
+    if (!allowedTypes.includes(file.type)) {
+      alert('仅支持上传 PDF、Word (DOCX)、Excel (XLSX)、文本和图片文件');
+      return;
+    }
+
+    // 检查文件大小 (10MB)
+    const maxSize = 10 * 1024 * 1024;
+    if (file.size > maxSize) {
+      alert('文件大小不能超过 10MB');
+      return;
+    }
+
+    setUploadingFile(true);
+    try {
+      // 使用新的附件API
+      const sessionId = currentConversationId || 'temp_session';
+      const response = await attachmentApi.upload(file, sessionId);
+
+      if (response.success && response.data) {
+        // 添加到附件列表
+        const newAttachment: Attachment = {
+          attachment_id: response.data.attachment_id,
+          filename: response.data.filename,
+          file_type: response.data.file_type,
+          file_size: response.data.file_size
+        };
+        setAttachments([...attachments, newAttachment]);
       } else {
-        newSet.add(messageId);
+        throw new Error(response.error || '上传失败');
       }
-      return newSet;
-    });
+    } catch (error) {
+      console.error('文件上传失败:', error);
+      alert(`文件上传失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setUploadingFile(false);
+      // 清空文件选择
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleRemoveAttachment = async (attachmentId: string) => {
+    try {
+      const sessionId = currentConversationId || 'temp_session';
+      await attachmentApi.delete(attachmentId, sessionId);
+      setAttachments(attachments.filter(att => att.attachment_id !== attachmentId));
+    } catch (error) {
+      console.error('删除附件失败:', error);
+      alert('删除附件失败');
+    }
   };
 
   const formatTimestamp = (timestamp: string) => {
@@ -262,49 +355,70 @@ const ChatArea: React.FC = () => {
   /**
    * 渲染格式化的答案
    */
-  const renderFormattedAnswer = (content: string) => {
-    const sections = parseAnswerFormat(content);
+  const renderFormattedAnswer = (content: string, message: Message) => {
+    // 如果有 message.sources，移除 content 中的【数据来源】部分，避免重复
+    let cleanContent = content;
+    if (message.sources && message.sources.length > 0) {
+      // 移除【数据来源】及其后面的内容
+      cleanContent = content.replace(/【数据来源】.*?$/gs, '').trim();
+      // 也移除【来源】（如果有）
+      cleanContent = cleanContent.replace(/【来源】.*?$/gs, '').trim();
+    }
+
+    const sections = parseAnswerFormat(cleanContent);
 
     if (!sections.hasFormat) {
       // 没有标准格式，按原样显示
-      return renderContent(content);
+      return (
+        <>
+          {renderContent(cleanContent)}
+          {/* 来源文档名称 - 顶格，颜色与标题一致 */}
+          {message.sources && message.sources.length > 0 && (
+            <div className="text-sm font-semibold text-chat-accent mt-3">
+              【来源】{message.sources.map((source, index) => (
+                <span key={source.id || index} className="font-normal text-chat-text">
+                  {index > 0 && '、'}
+                  {source.filename}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
+      );
     }
 
     // 判断是两段式还是三段式
-    const isTwoPartFormat = content.includes('【回答】') && !content.includes('【直接回答】');
+    const isTwoPartFormat = cleanContent.includes('【回答】') && !cleanContent.includes('【直接回答】');
     const titleText = isTwoPartFormat ? '【回答】' : '【直接回答】';
 
     return (
-      <div className="space-y-4">
+      <div className="space-y-3">
         {/* 【直接回答】或【回答】 */}
         {sections.directAnswer && (
           <div>
-            <div className="text-sm font-semibold text-chat-accent mb-2">{titleText}</div>
+            <div className="text-sm font-semibold text-chat-accent mb-1">{titleText}</div>
             <div className="text-chat-text pl-4">
               {renderContent(sections.directAnswer)}
             </div>
           </div>
         )}
 
-        {/* 【详细说明】（仅在三段式格式中显示） */}
-        {sections.detail && !isTwoPartFormat && (
+        {/* 【来源】 - 顶格显示，颜色与【回答】标题一致 */}
+        {message.sources && message.sources.length > 0 && (
           <div>
-            <div className="text-sm font-semibold text-chat-accent mb-2">【详细说明】</div>
+            <div className="text-sm font-semibold text-chat-accent mb-1">【来源】</div>
             <div className="text-chat-text pl-4">
-              {renderContent(sections.detail)}
+              {message.sources.map((source, index) => (
+                <span key={source.id || index} className="text-sm">
+                  {index > 0 && '、'}
+                  {source.filename}
+                </span>
+              ))}
             </div>
           </div>
         )}
 
-        {/* 【数据来源】 */}
-        {sections.sources && (
-          <div>
-            <div className="text-sm font-semibold text-chat-accent mb-2">【数据来源】</div>
-            <div className="text-chat-text pl-4 text-sm text-gray-400">
-              {renderContent(sections.sources)}
-            </div>
-          </div>
-        )}
+
       </div>
     );
   };
@@ -406,34 +520,12 @@ const ChatArea: React.FC = () => {
                 >
                   {/* 消息内容 */}
                   <div className="prose prose-invert max-w-none">
-                    {renderFormattedAnswer(message.content)}
+                    {renderFormattedAnswer(message.content, message)}
                   </div>
 
                   {/* AI消息的额外信息 */}
                   {message.role === 'assistant' && (
                     <div className="mt-4 pt-4 border-t border-chat-border">
-                      {/* 推理过程 */}
-                      {message.reasoning && message.reasoning.length > 0 && (
-                        <div>
-                          <button
-                            onClick={() => toggleReasoning(message.id)}
-                            className="flex items-center gap-2 text-xs text-chat-accent hover:underline"
-                          >
-                            <span>🧠 推理过程</span>
-                            <span>{expandedReasoning.has(message.id) ? '▼' : '▶'}</span>
-                          </button>
-                          {expandedReasoning.has(message.id) && (
-                            <div className="mt-2 p-2 bg-chat-bg rounded border border-chat-border text-xs text-gray-400">
-                              <ul className="list-disc list-inside space-y-1">
-                                {message.reasoning.map((step, index) => (
-                                  <li key={index}>{step}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
                       {/* 时间戳 */}
                       <div className="mt-2 text-xs text-gray-500">
                         {formatTimestamp(message.timestamp)}
@@ -472,12 +564,53 @@ const ChatArea: React.FC = () => {
       <div className="border-t border-chat-border p-4">
         <div className="max-w-4xl mx-auto">
           <div className="flex items-end gap-3 bg-chat-input rounded-lg border border-chat-border p-3">
-            <button
-              className="p-2 hover:bg-chat-bg-secondary rounded transition-colors flex-shrink-0"
-              title="上传附件"
-            >
-              <Paperclip size={20} className="text-gray-400" />
-            </button>
+            {/* 左侧：附件和回形针按钮 */}
+            <div className="flex flex-col items-start gap-2">
+              {/* 附件列表 - 在回形针按钮上方 */}
+              {attachments.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 max-w-[200px]">
+                  {attachments.map((attachment) => (
+                    <div
+                      key={attachment.attachment_id}
+                      className="inline-flex items-center gap-1 bg-gray-100 hover:bg-gray-200 rounded px-2 py-1 text-xs text-gray-700 transition-colors max-w-[180px]"
+                    >
+                      <span className="flex-shrink-0 text-gray-500">
+                        {getFileIcon(attachment.file_type)}
+                      </span>
+                      <span className="truncate flex-1" title={attachment.filename}>
+                        {attachment.filename}
+                      </span>
+                      <button
+                        onClick={() => handleRemoveAttachment(attachment.attachment_id)}
+                        className="flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors p-0.5 hover:bg-gray-300 rounded"
+                        title="删除"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 回形针按钮 */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.docx,.xlsx,.xls,.txt,.jpg,.jpeg,.png"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <button
+                onClick={handleFileUploadClick}
+                disabled={uploadingFile}
+                className="p-2 hover:bg-gray-100 rounded transition-colors flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed text-gray-500"
+                title="上传附件 (支持PDF、Word、Excel、文本、图片)"
+              >
+                <Paperclip size={18} />
+              </button>
+            </div>
+
+            {/* 中间：输入框 */}
             <textarea
               ref={textareaRef}
               value={inputValue}
@@ -488,6 +621,8 @@ const ChatArea: React.FC = () => {
               rows={1}
               disabled={isLoading}
             />
+
+            {/* 右侧：发送按钮 */}
             <button
               onClick={handleSend}
               disabled={!inputValue.trim() || isLoading}

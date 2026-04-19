@@ -6,10 +6,14 @@ IntentAgent - 意图识别智能体
 - 不使用硬编码的业务术语，保持泛化能力
 - 依赖 LLM 进行上下文理解和查询重写
 - 最小化规则，最大化 LLM 的理解能力
+
+[Karpathy Loop 接入] 使用 optimization_surface.py 的 LANGGRAPH_PROMPTS
 """
 
 import logging
 import json
+import sys
+import os
 from typing import Dict, Any, Optional
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -17,6 +21,25 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from ..state import AgentState
 
 logger = logging.getLogger(__name__)
+
+# ============== Karpathy Loop: 接入优化表面 ==============
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+try:
+    from optimization_surface import (
+        get_optimization_config,
+        LANGGRAPH_PROMPTS,
+        rewrite_query
+    )
+    OPTIMIZATION_SURFACE_AVAILABLE = True
+    logger.info("✅ [Karpathy Loop] IntentAgent: optimization_surface.py 已加载")
+except ImportError as e:
+    OPTIMIZATION_SURFACE_AVAILABLE = False
+    logger.warning(f"⚠️ [Karpathy Loop] IntentAgent: optimization_surface.py 未找到 - {e}")
+    LANGGRAPH_PROMPTS = {}
+# ==============================================================
 
 
 class IntentAgent:
@@ -62,7 +85,17 @@ class IntentAgent:
         self.system_prompt = self._build_system_prompt()
 
     def _build_system_prompt(self) -> str:
-        """构建系统提示词（简化版，发挥deepseek-r1:32B能力）"""
+        """
+        构建系统提示词
+
+        [Karpathy Loop] 优先使用 optimization_surface.py 的 LANGGRAPH_PROMPTS
+        """
+        # ============== Karpathy Loop: 使用优化表面的 Prompt ==============
+        if OPTIMIZATION_SURFACE_AVAILABLE and "intent_recognizer" in LANGGRAPH_PROMPTS:
+            return LANGGRAPH_PROMPTS["intent_recognizer"]
+        # ==============================================================
+
+        # 原逻辑（降级）
         return """分析用户查询意图，返回JSON格式：
 
 ```json
@@ -201,6 +234,8 @@ class IntentAgent:
         """
         使用LLM进行意图分析和查询重写
 
+        [Karpathy Loop] 集成 optimization_surface.py 的查询重写功能
+
         Args:
             query: 用户查询
             chat_history: 对话历史
@@ -211,12 +246,22 @@ class IntentAgent:
         # 先进行查询扩展
         expanded_query = self._expand_query(query)
 
+        # ============== Karpathy Loop: 应用优化表面的查询重写 ==============
+        final_query = expanded_query
+        if OPTIMIZATION_SURFACE_AVAILABLE:
+            # 在扩展基础上再应用优化表面的重写
+            surface_rewritten = rewrite_query(expanded_query)
+            if surface_rewritten != expanded_query:
+                logger.info(f"🔄 [Karpathy Loop] optimization_surface 重写: {expanded_query[:30]}... -> {surface_rewritten[:30]}...")
+                final_query = surface_rewritten
+        # ==============================================================
+
         messages = [
             SystemMessage(content=self.system_prompt)
         ]
 
-        # 使用扩展后的查询进行分析
-        query_to_analyze = expanded_query
+        # 使用最终查询进行分析
+        query_to_analyze = final_query
 
         # 构建用户消息
         if chat_history and len(chat_history) > 0:
@@ -245,11 +290,11 @@ class IntentAgent:
         try:
             result = json.loads(content)
             if "rewritten_query" not in result:
-                # 如果LLM没有重写，使用扩展后的查询
-                result["rewritten_query"] = expanded_query if expanded_query != query else query
+                # 如果LLM没有重写，使用最终处理后的查询
+                result["rewritten_query"] = final_query if final_query != query else query
             # 如果LLM重写了查询，检查是否需要进一步扩展
-            elif result.get("rewritten_query") == query and expanded_query != query:
-                result["rewritten_query"] = expanded_query
+            elif result.get("rewritten_query") == query and final_query != query:
+                result["rewritten_query"] = final_query
             return result
         except json.JSONDecodeError:
             pass
@@ -262,9 +307,9 @@ class IntentAgent:
             try:
                 result = json.loads(code_block_match.group(1))
                 if "rewritten_query" not in result:
-                    result["rewritten_query"] = expanded_query if expanded_query != query else query
-                elif result.get("rewritten_query") == query and expanded_query != query:
-                    result["rewritten_query"] = expanded_query
+                    result["rewritten_query"] = final_query if final_query != query else query
+                elif result.get("rewritten_query") == query and final_query != query:
+                    result["rewritten_query"] = final_query
                 return result
             except:
                 pass
@@ -275,19 +320,19 @@ class IntentAgent:
             try:
                 result = json.loads(json_match.group())
                 if "rewritten_query" not in result:
-                    result["rewritten_query"] = expanded_query if expanded_query != query else query
-                elif result.get("rewritten_query") == query and expanded_query != query:
-                    result["rewritten_query"] = expanded_query
+                    result["rewritten_query"] = final_query if final_query != query else query
+                elif result.get("rewritten_query") == query and final_query != query:
+                    result["rewritten_query"] = final_query
                 return result
             except:
                 pass
 
         # 所有方法都失败，记录警告并使用规则分析
         logger.warning(f"LLM返回的JSON解析失败，原始响应: {content[:300]}")
-        fallback_result = self._rule_intent_analysis(expanded_query)
-        # 确保返回扩展后的查询
-        if fallback_result.get("rewritten_query") == query and expanded_query != query:
-            fallback_result["rewritten_query"] = expanded_query
+        fallback_result = self._rule_intent_analysis(final_query)
+        # 确保返回最终处理后的查询
+        if fallback_result.get("rewritten_query") == query and final_query != query:
+            fallback_result["rewritten_query"] = final_query
         return fallback_result
 
     def _format_chat_history(self, chat_history: list) -> str:

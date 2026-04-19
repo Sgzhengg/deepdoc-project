@@ -330,6 +330,39 @@ export const searchApi = {
   },
 };
 
+// 附件 API
+export const attachmentApi = {
+  // 上传临时附件
+  upload: async (file: File, sessionId: string): Promise<ApiResponse> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('session_id', sessionId);
+
+    return apiCall(() =>
+      api.post('/chat/attachments/upload', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      })
+    );
+  },
+
+  // 获取会话的附件列表
+  list: async (sessionId: string): Promise<ApiResponse> => {
+    return apiCall(() => api.get(`/chat/attachments/list/${sessionId}`));
+  },
+
+  // 删除附件
+  delete: async (attachmentId: string, sessionId: string): Promise<ApiResponse> => {
+    return apiCall(() => api.delete(`/chat/attachments/delete/${attachmentId}?session_id=${sessionId}`));
+  },
+
+  // 清理会话的所有附件
+  cleanup: async (sessionId: string): Promise<ApiResponse> => {
+    return apiCall(() => api.delete(`/chat/attachments/cleanup/${sessionId}`));
+  },
+};
+
 // 健康检查 API
 export const healthApi = {
   // 检查后端健康状态

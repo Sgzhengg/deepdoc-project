@@ -1126,6 +1126,70 @@ class ChannelTableAnalyzer:
 
         return summary
 
+    def _generate_table_keywords(self, table: 'TableData') -> List[str]:
+        """
+        为表格生成关键词，用于提高检索匹配度
+
+        Args:
+            table: 表格数据对象
+
+        Returns:
+            关键词列表
+        """
+        keywords = []
+
+        try:
+            # 转换为DataFrame便于处理
+            import pandas as pd
+            df = pd.DataFrame(table.data)
+
+            # 1. 检查是否是套餐对比表
+            if '套餐名称' in table.headers or '产品ID' in table.headers:
+                for _, row in df.iterrows():
+                    if len(row) > 0:
+                        plan_name = str(row.iloc[0])
+                        # 提取套餐名称和价格
+                        if '潮玩青春卡' in plan_name:
+                            keywords.append(f"{plan_name}套餐详情")
+
+                            # 提取流量信息
+                            for idx, val in enumerate(row):
+                                val_str = str(val)
+                                header = table.headers[idx] if idx < len(table.headers) else ""
+                                if 'G' in val_str and '通用' in header:
+                                    keywords.append(f"{plan_name}包含{val_str}通用流量")
+                                elif 'G' in val_str and '定向' in header:
+                                    keywords.append(f"{plan_name}包含{val_str}定向流量")
+
+            # 2. 检查是否是费用标准表
+            elif '费用标准' in table.headers or '费用编码' in table.headers:
+                for _, row in df.iterrows():
+                    if len(row) > 0:
+                        fee_type = str(row.iloc[0])
+                        keywords.append(f"{fee_type}费用标准")
+
+                        # 提取费用金额
+                        for val in row:
+                            val_str = str(val)
+                            if '元' in val_str and any(c.isdigit() for c in val_str):
+                                keywords.append(f"{fee_type}{val_str}")
+
+            # 3. 检查是否是激励规则表
+            elif any(keyword in ' '.join(table.headers) for keyword in ['激励', '分成', '奖励']):
+                keywords.append("酬金政策")
+                keywords.append("分成激励规则")
+                keywords.append("渠道激励标准")
+
+            # 4. 通用关键词：从表头生成
+            for header in table.headers[:5]:  # 只取前5个表头
+                if header and len(header) > 2:
+                    keywords.append(header)
+
+        except Exception as e:
+            logger.warning(f"生成表格关键词时出错: {e}")
+
+        return list(set(keywords))  # 去重
+
     def save_tables_to_cache(self) -> bool:
         """
         保存表格数据到缓存文件
@@ -1133,34 +1197,85 @@ class ChannelTableAnalyzer:
         Returns:
             是否保存成功
         """
+        import tempfile
+        import shutil
+
         try:
+            logger.info(f"💾 开始保存表格缓存，表格数量: {len(self.tables)}")
+
             # 将表格数据转换为可序列化的格式
             tables_data = []
-            for table in self.tables:
-                table_dict = {
-                    "index": table.index,
-                    "rows": table.rows,
-                    "cols": table.cols,
-                    "headers": table.headers,
-                    "data": table.data,
-                    "table_type": table.table_type,
-                    "metadata": table.metadata
-                }
-                tables_data.append(table_dict)
+            failed_tables = []
 
-            # 保存到文件
-            with open(TABLES_CACHE_FILE, 'w', encoding='utf-8') as f:
-                json.dump({
-                    "version": "1.0",
-                    "tables_count": len(tables_data),
-                    "tables": tables_data
-                }, f, ensure_ascii=False, indent=2)
+            for idx, table in enumerate(self.tables):
+                try:
+                    # 生成表格关键词（用于检索优化）
+                    keywords = self._generate_table_keywords(table)
 
-            logger.info(f"✅ 表格数据已保存到缓存: {len(tables_data)} 个表格")
-            return True
+                    # 尝试序列化单个表格，检查是否有不可序列化的数据
+                    table_dict = {
+                        "index": table.index,
+                        "rows": table.rows,
+                        "cols": table.cols,
+                        "headers": table.headers,
+                        "data": table.data,
+                        "table_type": table.table_type,
+                        "metadata": table.metadata,
+                        "keywords": keywords  # 添加关键词字段
+                    }
+                    # 测试序列化
+                    json.dumps(table_dict, ensure_ascii=False)
+                    tables_data.append(table_dict)
+
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"⚠️ 表格 {idx} 数据无法序列化，跳过: {e}")
+                    failed_tables.append(idx)
+                    continue
+
+            if failed_tables:
+                logger.warning(f"⚠️ 跳过了 {len(failed_tables)} 个无法序列化的表格")
+
+            # 准备缓存数据
+            cache_data = {
+                "version": "1.0",
+                "tables_count": len(tables_data),
+                "tables": tables_data
+            }
+
+            # 先测试完整序列化
+            try:
+                json_str = json.dumps(cache_data, ensure_ascii=False, indent=2)
+                logger.info(f"✅ 序列化成功，数据大小: {len(json_str)} 字符")
+            except Exception as e:
+                logger.error(f"❌ 序列化失败: {e}")
+                return False
+
+            # 使用临时文件进行原子性写入
+            temp_file = TABLES_CACHE_FILE + '.tmp'
+            try:
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    f.write(json_str)
+
+                # 原子性替换文件
+                shutil.move(temp_file, TABLES_CACHE_FILE)
+
+                logger.info(f"✅ 表格数据已保存到缓存: {len(tables_data)} 个表格")
+                return True
+
+            except Exception as e:
+                logger.error(f"❌ 写入文件失败: {e}")
+                # 清理临时文件
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+                return False
 
         except Exception as e:
             logger.error(f"❌ 保存表格缓存失败: {e}")
+            import traceback
+            logger.error(f"详细错误堆栈:\n{traceback.format_exc()}")
             return False
 
     def _load_cached_tables(self) -> bool:

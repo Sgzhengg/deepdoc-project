@@ -141,20 +141,34 @@ class VectorStorage:
                     point_id = str(uuid.uuid4())
 
                     # 创建点数据
+                    payload = {
+                        "doc_id": doc_id,
+                        "chunk_index": i,
+                        "text": chunk_text,
+                        "chunk_text": chunk_text,  # 兼容字段
+                        "metadata": metadata,
+                        "filename": metadata.get("filename", "unknown"),
+                        "mime_type": metadata.get("mime_type", ""),
+                        "ingested_at": metadata.get("ingested_at", ""),
+                        "total_chunks": len(chunks)
+                    }
+
+                    # [Round 9 优化] 将 metadata 中的关键字段提升到 payload 顶层
+                    # 这样 Qdrant filter 可以直接访问这些字段
+                    important_fields = [
+                        "doc_type", "channel_types", "fee_types",
+                        "table_type", "contains_money", "contains_id",
+                        "contains_star_rating", "contains_customer_type",
+                        "tables_extracted"
+                    ]
+                    for field in important_fields:
+                        if field in metadata:
+                            payload[field] = metadata[field]
+
                     point = models.PointStruct(
                         id=point_id,
                         vector=embedding,
-                        payload={
-                            "doc_id": doc_id,
-                            "chunk_index": i,
-                            "text": chunk_text,
-                            "chunk_text": chunk_text,  # 兼容字段
-                            "metadata": metadata,
-                            "filename": metadata.get("filename", "unknown"),
-                            "mime_type": metadata.get("mime_type", ""),
-                            "ingested_at": metadata.get("ingested_at", ""),
-                            "total_chunks": len(chunks)
-                        }
+                        payload=payload
                     )
                     points.append(point)
                     stored_count += 1
@@ -517,6 +531,163 @@ class VectorStorage:
             }
         except Exception as e:
             return {"status": "unhealthy", "connected": False, "error": str(e)}
+
+    def search_by_keywords(self, keywords: List[str], top_k: int = 20,
+                          score_threshold: float = 0.0) -> List[Dict[str, Any]]:
+        """
+        方案1优化: 真正的关键词检索 - 使用Qdrant全文检索
+
+        使用Qdrant的scroll API获取所有文档，然后在内存中进行关键词匹配。
+        这是真正的关键词检索，不依赖向量匹配。
+
+        Args:
+            keywords: 关键词列表
+            top_k: 返回结果数量
+            score_threshold: 分数阈值（基于关键词匹配度）
+
+        Returns:
+            匹配的文档列表
+        """
+        if not self.connected and not self.connect():
+            return []
+
+        if not keywords:
+            return []
+
+        try:
+            logger.debug(f"🔍 真正的关键词检索: {keywords}")
+
+            # 使用scroll API获取所有文档
+            all_points = []
+            offset = None
+
+            while True:
+                records, offset = self.client.scroll(
+                    collection_name=self.config.collection_name,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False
+                )
+
+                if not records:
+                    break
+
+                all_points.extend(records)
+
+                if offset is None:
+                    break
+
+            logger.debug(f"📋 获取到 {len(all_points)} 个文档进行关键词匹配")
+
+            # 计算关键词匹配分数
+            scored_results = []
+
+            for record in all_points:
+                payload = record.payload or {}
+                text = payload.get("text", payload.get("chunk_text", ""))
+                metadata = payload.get("metadata", {})
+
+                # 计算关键词匹配分数
+                keyword_score = self._calculate_keyword_match_score(
+                    text, keywords, metadata
+                )
+
+                if keyword_score > score_threshold:
+                    scored_results.append({
+                        "id": str(record.id),
+                        "score": keyword_score,
+                        "text": text,
+                        "metadata": metadata,
+                        "chunk_index": payload.get("chunk_index"),
+                        "doc_id": payload.get("doc_id"),
+                        "source_document": payload.get("filename", "unknown"),
+                        "search_type": "keyword_fulltext"  # 标记为全文检索
+                    })
+
+            # 按分数排序并返回top_k
+            scored_results.sort(key=lambda x: x["score"], reverse=True)
+
+            logger.debug(f"✅ 关键词检索完成，返回 {len(scored_results[:top_k])} 个结果")
+
+            return scored_results[:top_k]
+
+        except Exception as e:
+            logger.error(f"❌ 关键词检索失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+
+    def _calculate_keyword_match_score(self, text: str, keywords: List[str],
+                                       metadata: Dict[str, Any]) -> float:
+        """
+        计算文本与关键词的匹配分数
+
+        Args:
+            text: 待匹配的文本
+            keywords: 关键词列表
+            metadata: 元数据（用于额外匹配）
+
+        Returns:
+            匹配分数（0-1范围）
+        """
+        if not text or not keywords:
+            return 0.0
+
+        text_lower = text.lower()
+        total_score = 0.0
+
+        # 按关键词长度排序，先处理长关键词（更精确）
+        sorted_keywords = sorted(keywords, key=len, reverse=True)
+
+        for keyword in sorted_keywords:
+            keyword_lower = keyword.lower()
+
+            # 1. 精确匹配（权重最高）
+            if keyword_lower in text_lower:
+                # 计算出现频率
+                count = text_lower.count(keyword_lower)
+
+                # 根据关键词长度给予不同权重
+                if len(keyword) >= 8:  # 长关键词（如产品ID）
+                    weight = 5.0
+                elif len(keyword) >= 5:  # 中等长度关键词
+                    weight = 3.0
+                elif len(keyword) >= 4:  # 短语
+                    weight = 2.0
+                else:  # 单个词
+                    weight = 1.0
+
+                total_score += count * weight
+
+                # 位置权重（开头出现更重要）
+                pos = text_lower.find(keyword_lower)
+                if pos >= 0 and pos < 100:  # 前100字符
+                    total_score += weight * 0.5
+
+            # 2. 部分匹配（针对长关键词，容错）
+            elif len(keyword) >= 4:
+                # 检查是否包含关键词的主要部分
+                for i in range(len(keyword) - 2):
+                    substring = keyword[i:i+3].lower()
+                    if substring in text_lower:
+                        total_score += 0.2
+                        break
+
+        # 3. 元数据匹配
+        if metadata:
+            for key, value in metadata.items():
+                if isinstance(value, str):
+                    value_lower = value.lower()
+                    for keyword in keywords:
+                        if keyword.lower() in value_lower:
+                            total_score += 2.0  # 元数据匹配权重更高
+                            break
+
+        # 归一化到0-1范围
+        normalized_score = min(total_score / 30.0, 1.0)
+
+        return normalized_score
 
 
 # 全局单例

@@ -127,9 +127,11 @@ class ChannelPolicyAgent:
             reasoning
         )
 
-        # 收集来源
+        # 收集来源（修复：添加 filename 字段）
         for tr in table_results:
             sources.append({
+                "id": f"table_{tr.source_table}",
+                "filename": tr.source_table or f"表格{len(sources)+1}",
                 "type": "table",
                 "table_index": tr.source_table,
                 "confidence": tr.confidence,
@@ -137,9 +139,16 @@ class ChannelPolicyAgent:
             })
 
         for vr in vector_results[:3]:
+            doc_name = (
+                vr.get("metadata", {}).get("filename") or
+                vr.get("source_document") or
+                vr.get("filename") or
+                f"文档{len(sources)+1}"
+            )
             sources.append({
-                "type": "document",
                 "id": vr.get("id", ""),
+                "filename": doc_name,
+                "type": "document",
                 "score": vr.get("score", 0),
                 "source": vr.get("source_document", "")
             })

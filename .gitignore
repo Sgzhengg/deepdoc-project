@@ -95,5 +95,55 @@ backend/output/
 backend/storage/uploads/*
 !backend/storage/.gitkeep
 backend/.env
+backend/.env.example
 ollama_clean.log
 gpu_monitor.log
+
+# Analysis and test files in root
+analyze_*.py
+check_*.py
+evaluate*.py
+optimize*.py
+reindex*.py
+restart_*.sh
+run_*.py
+run_*.bat
+*_changes.md
+*_report.md
+*_summary.md
+*.json
+!backend/package.json
+!frontend/package.json
+!backend/services/*.json
+!backend/data/*.json
+nul
+
+# Frontend
+.vite/
+frontend/src/nul
+frontend/vite.config.ts.timestamp-*.mjs
+
+# Documentation and analysis (keep only important docs)
+GRAPH_*.md
+LOW_SCORE_*.md
+
+# Backend specific
+backend/data/
+backend/storage/
+backend/tests/
+backend/training_data/
+backend/validation/
+backend/*.docx
+backend/*.pdf
+backend/*.xlsx
+backend/*.txt
+backend/*.log
+backend/test_*
+backend/*_sample*.json
+backend/improved_*.json
+backend/real_*.json
+backend/nul
+backend/*.patch
+backend/retry_*.txt
+backend/routes/attachment_routes.py
+backend/routes/progress_routes.py

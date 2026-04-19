@@ -20,8 +20,8 @@ class EmbeddingService:
         self.config = VectorConfig.from_env()
 
         # 模型选择优先级：参数 > 配置 > 默认
-        # 强制使用512维模型以匹配Qdrant集合配置
-        self.model_name = model_name or self.config.embedding_model or "BAAI/bge-small-zh-v1.5"
+        # [Round 13 阶段 2] 升级到 1024 维模型以提升语义理解能力
+        self.model_name = model_name or self.config.embedding_model or "BAAI/bge-large-zh-v1.5"
 
         # 根据显存和集合配置自动选择模型
         if self._should_use_light_model():

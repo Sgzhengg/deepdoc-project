@@ -27,11 +27,11 @@ class VectorConfig:
             qdrant_host=os.getenv("QDRANT_HOST", "localhost"),
             qdrant_port=int(os.getenv("QDRANT_PORT", "6333")),
             collection_name=os.getenv("QDRANT_COLLECTION", "documents"),
-            embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5"),
-            embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "512")),
+            embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5"),
+            embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "1024")),
             batch_size=int(os.getenv("BATCH_SIZE", "256")),
             use_fp16=os.getenv("USE_FP16", "true").lower() == "true",
             device=os.getenv("DEVICE", "cuda"),
-            chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
+            chunk_size=int(os.getenv("CHUNK_SIZE", "2000")),  # 增加到2000，保留更完整的上下文
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "200"))
         )

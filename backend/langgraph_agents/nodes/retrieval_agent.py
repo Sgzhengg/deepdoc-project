@@ -6,16 +6,40 @@ RetrievalAgent - 检索智能体
 - 自动检测是否需要表格检索
 - 同时使用向量检索和表格检索
 - 合并多种检索结果
+
+[Karpathy Loop 接入] 使用 optimization_surface.py 的查询重写和表格检测
 """
 
 import logging
 import re
+import sys
+import os
 from typing import Dict, Any, List, Tuple
 from langchain_ollama import ChatOllama
 
 from ..state import AgentState
 
 logger = logging.getLogger(__name__)
+
+# ============== Karpathy Loop: 接入优化表面 ==============
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+try:
+    from optimization_surface import (
+        get_optimization_config,
+        build_qdrant_payload,
+        rewrite_query,
+        QDRANT_CONFIG,
+        LANGGRAPH_PROMPTS
+    )
+    OPTIMIZATION_SURFACE_AVAILABLE = True
+    logger.info("✅ [Karpathy Loop] RetrievalAgent: optimization_surface.py 已加载")
+except ImportError as e:
+    OPTIMIZATION_SURFACE_AVAILABLE = False
+    logger.warning(f"⚠️ [Karpathy Loop] RetrievalAgent: optimization_surface.py 未找到 - {e}")
+# ==============================================================
 
 
 class RetrievalAgent:
@@ -53,6 +77,8 @@ class RetrievalAgent:
         """
         执行检索（优化：直接根据intent决定策略）
 
+        [Karpathy Loop] 使用 optimization_surface.py 的查询重写功能
+
         Args:
             state: 当前状态
 
@@ -60,6 +86,16 @@ class RetrievalAgent:
             更新后的状态
         """
         query = state["rewritten_query"] or state["user_query"]
+
+        # ============== Karpathy Loop: 应用查询重写 ==============
+        if OPTIMIZATION_SURFACE_AVAILABLE and query == state["user_query"]:
+            # 如果 rewritten_query 与原查询相同，尝试使用优化表面的重写
+            rewritten = rewrite_query(query)
+            if rewritten != query:
+                query = rewritten
+                logger.info(f"🔄 [Karpathy Loop] 查询重写: {state['user_query'][:30]}... -> {query[:30]}...")
+        # ==============================================================
+
         intent = state["intent"]
 
         # 优化：直接根据intent决定检索策略，无需plan_retrieval节点
@@ -74,6 +110,7 @@ class RetrievalAgent:
         try:
             # 检测是否需要表格检索
             needs_table = self._needs_table_retrieval(query, intent)
+            logger.info(f"RetrievalAgent: 检测需要表格检索={needs_table}")
 
             if strategy == "table":
                 # 强制表格检索
@@ -119,6 +156,8 @@ class RetrievalAgent:
         """
         检测是否需要表格检索
 
+        [Karpathy Loop] 使用 optimization_surface.py 中的表格检测逻辑
+
         Args:
             query: 用户查询
             intent: 意图类型
@@ -131,13 +170,27 @@ class RetrievalAgent:
         # 通用化检测：依赖LLM意图判断，不使用硬编码业务关键词
         # table_query意图已经由IntentAgent通过LLM识别
         if intent == "table_query":
+            logger.info(f"  -> 意图是 table_query，需要表格检索")
             return True
 
-        # 通用模式：包含数字+符号的组合（可能是表格数据查询，但不硬编码具体业务术语）
-        # 例如：数字+%、数字+元、字母+数字等通用模式
-        if re.search(r'\d+%|\d+[元C元]|[A-Z]\d+|T\d+', query_lower):
-            return True
+        # ============== Karpathy Loop: 使用优化表面的表格检测 ==============
+        if OPTIMIZATION_SURFACE_AVAILABLE:
+            # 使用 build_qdrant_payload 中的表格检测逻辑
+            payload = build_qdrant_payload(query, is_table_query=False)
+            # 如果 payload 包含 filter 且 filter 包含 table 类型，说明是表格查询
+            if "filter" in payload:
+                logger.info(f"  -> [Karpathy Loop] build_qdrant_payload 检测到表格查询")
+                return True
 
+        # ============== 原逻辑（降级/补充） ==============
+        # 通用模式：包含数字+符号的组合（可能是表格数据查询）
+        match = re.search(r'\d+%|\d+[元C元]|[A-Z]\d+|T\d+', query_lower)
+        if match:
+            logger.info(f"  -> 检测到数字模式 '{match.group()}'，需要表格检索")
+            return True
+        # ==============================================================
+
+        logger.info(f"  -> 不需要表格检索 (intent={intent}, query={query[:30]})")
         return False
 
     async def _vector_retrieval(
@@ -218,6 +271,10 @@ class RetrievalAgent:
 
                 results = self.table_analyzer.query(query, filters=state.get("entities", []))
                 logger.info(f"📊 表格查询返回 {len(results)} 个结果")
+
+                # 打印每个表格结果
+                for i, r in enumerate(results[:3]):
+                    logger.info(f"   表格结果[{i}]: answer={r.answer[:100] if r.answer else 'None'}, source={r.source_table}")
 
                 # 保存表格结果到状态
                 state["table_results"] = [
