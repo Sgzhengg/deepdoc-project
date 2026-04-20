@@ -124,6 +124,7 @@ const LeftSidebar: React.FC = () => {
   };
 
   const formatPreview = (text: string, maxLength = 30) => {
+    if (!text || text === undefined || text === null) return '暂无预览';
     if (text.length <= maxLength) return text;
     return text.substring(0, maxLength) + '...';
   };

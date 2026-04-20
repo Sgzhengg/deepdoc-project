@@ -1,57 +1,19 @@
-# DeepDoc Backend - PaddleOCR版本 requirements
-# 移除DeepDoctection，使用PaddleOCR替代
+# 极简长上下文架构依赖
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
 
-# ========== Core Framework ==========
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-python-multipart>=0.0.21
-python-dotenv>=1.0.0
+# 文档处理
+python-docx==1.1.0
+pandas==2.1.3
+pypdf==3.17.4
+openpyxl==3.1.2
 
-# ========== Document Processing - PaddleOCR方案 ==========
-# PDF处理
-pypdf>=6.0.0                # PDF文本提取
-pymupdf>=1.23.0              # MuPDF (PDF转图片)
-pdf2image>=1.16.0            # PDF转图片库
+# 可选：OCR支持（如需要PDF OCR可安装）
+# paddleocr==2.7.0.3
+# easyocr==1.7.1
+# opencv-python==4.8.1.78
 
-# PaddleOCR - 表格识别核心
-paddleocr>=2.7.0             # PaddleOCR主包
-paddlepaddle>=2.5.0          # 飞桨框架 (CPU版本)
-
-# Office文档
-python-docx==1.1.0            # Word文档
-openpyxl==3.1.5               # Excel表格
-pandas==2.2.2                # 数据处理
-
-# ========== Vector Search & NLP ==========
-sentence-transformers>=2.7.0
-qdrant-client==1.12.0
-transformers>=4.34.0
-
-# ========== Text Processing ==========
-jieba==0.42.1                 # 中文分词
-rank-bm25==0.2.2              # BM25算法
-
-# ========== Data Validation ==========
-pydantic==2.9.0
-pydantic-settings==2.6.0
-
-# ========== Numerical Computing ==========
-numpy==1.24.0                # 兼容性考虑
-
-# ========== HTTP & Async ==========
-requests==2.32.0
-aiohttp==3.10.0
-
-# ========== Image Processing ==========
-Pillow==11.3.0
-
-# ========== LangGraph & LangChain (NEW) ==========
-langgraph>=0.2.0               # LangGraph框架
-langchain>=0.3.0               # LangChain核心
-langchain-core>=0.3.0          # LangChain核心组件
-langchain-ollama>=0.3.0        # Ollama集成
-langchain-community>=0.3.0     # 社区集成
-
-# ========== LLM & Chat ==========
-ollama>=0.4.0                  # Ollama客户端
-redis>=5.0.0                   # 会话存储
+# 基础工具
+python-dotenv==1.0.0

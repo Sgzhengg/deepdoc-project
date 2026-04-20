@@ -229,7 +229,7 @@ export const documentApi = {
       const formData = new FormData();
       formData.append('file', file);
 
-      return api.post('/documents/ingest', formData, {
+      return api.post('/ingest', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
