@@ -139,6 +139,24 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
                 className="w-full px-3 py-2 bg-chat-input border border-chat-border rounded-lg text-chat-text text-sm focus:outline-none focus:border-chat-accent"
               />
             </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-2">
+                API 密钥
+              </label>
+              <input
+                type="password"
+                placeholder="输入API密钥以访问后端服务"
+                defaultValue={localStorage.getItem('api-key') || ''}
+                onChange={(e) => {
+                  localStorage.setItem('api-key', e.target.value.trim());
+                  setHasChanges(true);
+                }}
+                className="w-full px-3 py-2 bg-chat-input border border-chat-border rounded-lg text-chat-text text-sm focus:outline-none focus:border-chat-accent"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                🔒 安全要求：访问受保护的API端点需要提供有效的API密钥
+              </p>
+            </div>
           </div>
         </div>
 

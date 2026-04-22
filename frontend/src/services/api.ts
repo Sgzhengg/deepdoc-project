@@ -61,6 +61,12 @@ api.interceptors.request.use(
       }
     }
 
+    // 添加 API 密钥（安全配置）
+    const apiKey = localStorage.getItem('api-key');
+    if (apiKey) {
+      config.headers['X-API-Key'] = apiKey;
+    }
+
     // 添加 token（如果有）
     const token = localStorage.getItem('auth-token');
     if (token) {

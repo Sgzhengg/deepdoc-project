@@ -33,22 +33,34 @@ class SimpleLongContextService:
             return get_system_prompt()
         except ImportError:
             # 回退到硬编码提示词
-            return """你是运营商渠道业务AI助手。
+            return """你是运营商渠道业务AI助手，专门查询运营商政策文档。
 
-回答格式要求：
-1. 必须以【回答】开始，直接回答问题，重点突出，简洁明了，不要啰嗦
-2. 必须以【数据来源】结束，列出具体引用的知识库文档名称
-3. 禁止使用markdown格式（不用**、###、-、*等符号）
-4. 纯文本输出
+## 核心原则
+1. **严格依据文档回答**：只能基于提供的文档内容回答，不能编造信息
+2. **简洁直接**：找到答案直接回答，找不到直接说找不到，不要啰嗦
+3. **准确优先**：不确定的信息不要提供
 
-正确格式示例：
+## 输出格式要求（严格执行）
+
 【回答】
-29元潮玩青春卡套餐的套内定向流量为30GB，办理时自动订购"潮玩会员"增值业务。
+（直接回答，最多3-5句话，禁止废话）
+
+**如果找到答案：**
+直接给出关键信息，用1.2.3.组织要点
+
+**如果找不到答案：**
+直接说明"当前文档未找到相关产品ID和资费信息"，不要提供无关信息
 
 【数据来源】
-潮玩青春卡套餐资费详情
+（列出引用的文档名称）
 
-严格按照这个格式，禁止添加其他内容。"""
+## 重要约束
+- 总字数不超过120字
+- 禁止使用markdown格式
+- 禁止提供推测或无关信息
+- 找不到答案时，一句话说明即可
+
+严格按照此格式，保持简洁专业。"""
 
     def load_documents(self, data_dir: str) -> int:
         """从目录加载所有文档（DOCX, XLSX）"""
@@ -90,7 +102,7 @@ class SimpleLongContextService:
         return count
 
     def _parse_docx_enhanced(self, file_path: Path) -> Tuple[str, dict]:
-        """增强版 DOCX 解析 - 更好的表格处理"""
+        """增强版 DOCX 解析 - 完整表格处理"""
         try:
             from docx import Document
             import pandas as pd
@@ -112,7 +124,7 @@ class SimpleLongContextService:
                                 word_count += len(text)
                             break
                 elif element.tag.endswith('tbl'):
-                    # 表格处理 - 增强版
+                    # 表格处理 - 完整版
                     for table in doc.tables:
                         if table._element == element:
                             table_content = self._parse_table_enhanced(table)
@@ -120,7 +132,8 @@ class SimpleLongContextService:
                                 content_parts.append(table_content)
                                 tables_info.append({
                                     'rows': len(table.rows),
-                                    'cols': len(table.columns)
+                                    'cols': len(table.columns),
+                                    'content': table_content  # 保存完整表格内容
                                 })
                             break
 
@@ -137,7 +150,7 @@ class SimpleLongContextService:
             return self._fallback_docx_text(file_path), {'word_count': 0, 'tables': []}
 
     def _parse_table_enhanced(self, table) -> str:
-        """增强版表格解析 - 转为清晰的 Markdown"""
+        """增强版表格解析 - 完整保留表格信息"""
         try:
             import pandas as pd
 
@@ -147,7 +160,7 @@ class SimpleLongContextService:
                 row_data = []
                 for cell in row.cells:
                     cell_text = cell.text.strip()
-                    # 处理单元格中的换行
+                    # 处理单元格中的换行，但保留重要结构
                     cell_text = cell_text.replace('\n', ' ')
                     row_data.append(cell_text)
                 table_data.append(row_data)
@@ -155,22 +168,23 @@ class SimpleLongContextService:
             if not table_data or len(table_data) < 1:
                 return ""
 
-            # 尝试创建 DataFrame
-            try:
-                if len(table_data) >= 2:
-                    # 第一行作为表头
-                    df = pd.DataFrame(table_data[1:], columns=table_data[0])
-                    return f"\n{df.to_markdown(index=False)}\n"
+            # 创建完整的文本表格
+            table_lines = []
+            for i, row in enumerate(table_data):
+                if i == 0:
+                    # 表头
+                    table_lines.append(" | ".join(row))
+                    table_lines.append("-+-".join(["-" for _ in row]))
                 else:
-                    # 单行表格
-                    return " | ".join(table_data[0])
-            except:
-                # 回退到简单表格格式
-                return "\n" + "\n".join([" | ".join(row) for row in table_data]) + "\n"
+                    # 数据行
+                    table_lines.append(" | ".join(row))
+
+            return "\n" + "\n".join(table_lines) + "\n"
 
         except Exception as e:
             logger.error(f"❌ 表格解析失败: {e}")
-            return ""
+            # 回退：直接用原始数据
+            return "\n".join([" | ".join(row) for row in table_data]) + "\n"
 
     def _parse_xlsx_enhanced(self, file_path: Path) -> Tuple[str, dict]:
         """增强版 XLSX 解析"""
@@ -303,8 +317,13 @@ class SimpleLongContextService:
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
-    def ask_deepseek_long_context(self, question: str) -> dict:
-        """调用 DeepSeek API 进行问答 - 真正的长上下文架构"""
+    def ask_deepseek_long_context(self, question: str, conversation_history: list = None) -> dict:
+        """调用 DeepSeek API 进行问答 - 真正的长上下文架构
+
+        Args:
+            question: 用户问题
+            conversation_history: 对话历史列表，格式为 [{"role": "user/assistant", "content": "..."}]
+        """
         if not self.deepseek_api_key:
             logger.warning("⚠️ DeepSeek API Key 未配置")
             return self._fallback_answer_long_context(question)
@@ -313,11 +332,53 @@ class SimpleLongContextService:
             # 直接构造所有文档的完整内容
             all_docs_content = self._build_all_documents_context()
 
-            # 构造消息 - 确保中文正确传递
+            # 构造消息 - 支持对话历史
             messages = [
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": f"参考文档内容：\n\n{all_docs_content}\n\n用户问题：{question}\n\n请基于上述文档内容回答问题，并注明引用来源。"}
             ]
+
+            # 添加对话历史（最近的对话，最多保留最近6轮以避免token超限）
+            if conversation_history and len(conversation_history) > 0:
+                logger.info(f"📝 对话历史: {len(conversation_history)} 条消息")
+                # 只取最近的对话历史，最多6轮（12条消息）
+                recent_history = conversation_history[-12:] if len(conversation_history) > 12 else conversation_history
+                for msg in recent_history:
+                    # 只添加role和content，避免添加timestamp等额外字段
+                    if "role" in msg and "content" in msg:
+                        messages.append({
+                            "role": msg["role"],
+                            "content": msg["content"]
+                        })
+                        logger.info(f"  - {msg['role']}: {msg['content'][:50]}...")
+            else:
+                logger.info("📝 无对话历史（首次提问）")
+
+            # 添加当前问题，附带文档上下文和智能上下文提示
+            context_hint = self._generate_context_hint(conversation_history, question)
+
+            # 如果有上下文提示，修改用户问题使其更加明确
+            enhanced_question = question
+            if context_hint:
+                # 如果问题是关于"该服务"的产品ID/资费，且上下文提示指明了增值业务
+                if "该服务" in question and ("产品ID" in question or "资费" in question):
+                    # 从上下文提示中提取服务名称并直接替换问题
+                    import re
+                    service_match = re.search(r'增值业务[：:](.+?)[。，]', context_hint)
+                    if service_match:
+                        service_name = service_match.group(1).strip()
+                        # 使用英文增强版本，因为DeepSeek对英文问题理解更准确
+                        enhanced_question = f"What is the product ID and price for the service mentioned above: {service_name}?"
+                        logger.info(f"🔄 问题增强: {question} -> {enhanced_question}")
+
+            user_content = f"参考文档内容：\n\n{all_docs_content}\n\n用户问题：{enhanced_question}\n\n请基于上述文档内容回答问题，并注明引用来源。"
+
+            if context_hint:
+                user_content += f"\n\n【上下文提示】{context_hint}"
+
+            messages.append({
+                "role": "user",
+                "content": user_content
+            })
 
             # 调用 API
             headers = {
@@ -328,8 +389,8 @@ class SimpleLongContextService:
             payload = {
                 "model": "deepseek-chat",
                 "messages": messages,
-                "temperature": 0.3,
-                "max_tokens": 2000
+                "temperature": 0.1,  # 降低随机性，减少啰嗦
+                "max_tokens": 800     # 限制输出长度，强制简洁
             }
 
             logger.info(f"🔍 调用DeepSeek API (长上下文): question='{question[:50]}...', total_docs={len(self.documents)}")
@@ -349,10 +410,19 @@ class SimpleLongContextService:
                 # 后处理：格式化回答为标准格式
                 formatted_answer = self._format_answer(raw_answer)
 
+                # 构造符合前端期待的数据格式
+                sources_list = []
+                for doc_name in self.documents.keys():
+                    sources_list.append({
+                        "id": doc_name,
+                        "filename": doc_name,
+                        "relevance": 1.0
+                    })
+
                 return {
                     "success": True,
                     "answer": formatted_answer,
-                    "sources": list(self.documents.keys()),
+                    "sources": sources_list,
                     "model_used": "deepseek-chat-long-context",
                     "context_docs_count": len(self.documents),
                     "all_docs_used": True
@@ -402,18 +472,36 @@ class SimpleLongContextService:
                 "\n\n💡 *由于未配置 DeepSeek API，以上为文档预览。建议配置 API Key 以获得更准确的答案。*"
             )
 
+            # 构造符合前端期待的数据格式
+            sources_list = []
+            for doc_name in self.documents.keys():
+                sources_list.append({
+                    "id": doc_name,
+                    "filename": doc_name,
+                    "relevance": 1.0
+                })
+
             return {
                 "success": True,
                 "answer": answer,
-                "sources": list(self.documents.keys()),
+                "sources": sources_list,
                 "model_used": "direct_document_preview",
                 "context_docs_count": len(self.documents)
             }
         else:
+            # 构造符合前端期待的数据格式
+            sources_list = []
+            for doc_name in self.documents.keys():
+                sources_list.append({
+                    "id": doc_name,
+                    "filename": doc_name,
+                    "relevance": 1.0
+                })
+
             return {
                 "success": True,
                 "answer": "未在知识库中找到相关信息，请先上传相关文档。",
-                "sources": [],
+                "sources": sources_list,
                 "model_used": "no_documents",
                 "context_docs_count": 0
             }
@@ -460,12 +548,84 @@ class SimpleLongContextService:
         clean_answer = re.sub(r'###*', '', clean_answer)  # 去除标题
         clean_answer = re.sub(r'\[.*?\]', '', clean_answer)  # 去除引用
 
-        # 如果内容已经包含【数据来源】，说明已经是完整格式
+        # 如果内容已经包含【数据来源】，需要替换为我们自己的文档列表
         if '【数据来源】' in clean_answer:
-            # 只去除markdown，保持原有结构
-            clean_answer = re.sub(r'\*\*(.*?)\*\*', r'\1', raw_answer)
-            clean_answer = re.sub(r'###*', '', clean_answer)
-            return clean_answer
+            # 分离回答部分和数据来源部分
+            parts = clean_answer.split('【数据来源】')
+            answer_part = parts[0].strip()
+            # 去除markdown格式
+            answer_part = re.sub(r'\*\*(.*?)\*\*', r'\1', answer_part)
+            answer_part = re.sub(r'###*', '', answer_part)
+            # 重新构建格式，使用实际的文档列表
+            formatted = f"【回答】\n{answer_part}\n\n【数据来源】\n"
+            for doc_name in list(self.documents.keys())[:3]:  # 最多显示3个文档
+                formatted += f"{doc_name}\n"
+            return formatted
+
+    def _generate_context_hint(self, conversation_history: list, current_question: str) -> str:
+        """生成智能上下文提示，帮助AI理解指代关系
+
+        Args:
+            conversation_history: 对话历史
+            current_question: 当前用户问题
+
+        Returns:
+            上下文提示字符串，如果不需要则返回空字符串
+        """
+        if not conversation_history or len(conversation_history) == 0:
+            return ""
+
+        # 检测当前问题是否包含指代词和产品ID/资费相关询问
+        reference_words = ["该服务", "这个服务", "上述服务", "该产品", "这个产品", "上述产品", "该业务", "这个业务"]
+        id_price_keywords = ["产品ID", "产品id", "资费", "价格", "多少钱"]
+        has_reference = any(word in current_question for word in reference_words)
+        asks_id_price = any(word in current_question for word in id_price_keywords)
+
+        if not (has_reference and asks_id_price):
+            return ""
+
+        # 分析最后一条助手回复，查找增值业务/附加服务
+        last_assistant_msg = None
+        for msg in reversed(conversation_history):
+            if msg.get("role") == "assistant":
+                last_assistant_msg = msg.get("content", "")
+                break
+
+        if not last_assistant_msg:
+            return ""
+
+        # 检测是否提到了增值业务/附加服务 - 使用更精确的模式
+        import re
+        found_services = []
+
+        # 匹配"自动同订XXX服务"模式
+        auto_order_pattern = r'自动同订(.+?服务)'
+        auto_matches = re.findall(auto_order_pattern, last_assistant_msg)
+        found_services.extend(auto_matches)
+
+        # 匹配"综合意外保障服务"
+        if '综合意外保障服务' in last_assistant_msg:
+            # 提取完整的服务名称
+            accident_pattern = r'(综合意外保障服务（[^）]+）)'
+            accident_matches = re.findall(accident_pattern, last_assistant_msg)
+            found_services.extend(accident_matches)
+            if not accident_matches:
+                found_services.append('综合意外保障服务（个人版）')
+
+        # 清理和去重
+        clean_services = []
+        for service in found_services:
+            clean_service = service.strip()
+            if 2 < len(clean_service) < 30 and clean_service not in clean_services:
+                clean_services.append(clean_service)
+
+        # 如果找到了增值业务，生成明确的上下文提示
+        if clean_services:
+            # 只取第一个（最相关的）增值业务
+            primary_service = clean_services[0]
+            return f"增值业务：{primary_service}。请优先提供此增值业务的产品ID和资费信息，不要回答主套餐的信息。"
+
+        return ""
 
         # 提取关键信息（去除常见的废话）
         noise_phrases = [

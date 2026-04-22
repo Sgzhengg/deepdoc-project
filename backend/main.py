@@ -23,11 +23,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.encoders import jsonable_encoder
+
+# 导入安全配置
+from config.security import verify_api_key, verify_ip_access, check_rate_limit, get_client_ip
 
 # ========== 创建FastAPI应用 ==========
 
@@ -158,9 +161,19 @@ async def health_check():
         }
 
 @app.post("/api/chat")
-async def chat_endpoint(request: Request):
+async def chat_endpoint(
+    request: Request,
+    api_key: str = Depends(verify_api_key)
+):
     """智能问答接口（基于文档检索 + DeepSeek API）"""
     try:
+        # IP访问验证
+        client_ip = get_client_ip(request)
+        await verify_ip_access(client_ip)
+
+        # 请求频率限制
+        await check_rate_limit(client_ip)
+
         # 安全地获取请求体
         try:
             body = await request.json()
@@ -180,6 +193,9 @@ async def chat_endpoint(request: Request):
         if session_id not in _conversations:
             _conversations[session_id] = []
 
+        # 获取历史对话（不包括当前消息，用于API调用）
+        conversation_history = _conversations[session_id].copy()
+
         # 保存用户消息
         _conversations[session_id].append({
             "role": "user",
@@ -187,8 +203,8 @@ async def chat_endpoint(request: Request):
             "timestamp": datetime.datetime.now().isoformat()
         })
 
-        # 真正的长上下文架构：直接发送所有文档给 DeepSeek API
-        result = service.ask_deepseek_long_context(message)
+        # 真正的长上下文架构：直接发送所有文档给 DeepSeek API，包含对话历史
+        result = service.ask_deepseek_long_context(message, conversation_history)
 
         # 保存助手回复
         _conversations[session_id].append({
@@ -211,9 +227,20 @@ async def chat_endpoint(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/ingest")
-async def ingest_document(file: UploadFile = File(...)):
+async def ingest_document(
+    request: Request,
+    file: UploadFile = File(...),
+    api_key: str = Depends(verify_api_key)
+):
     """文档入库到知识库"""
     try:
+        # IP访问验证
+        client_ip = get_client_ip(request)
+        await verify_ip_access(client_ip)
+
+        # 请求频率限制
+        await check_rate_limit(client_ip)
+
         service = get_service()
 
         # 保存上传的文件
