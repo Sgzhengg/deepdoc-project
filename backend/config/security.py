@@ -11,13 +11,27 @@ logger = logging.getLogger(__name__)
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 # 从环境变量获取API密钥，如果未设置则使用默认密钥（仅用于开发）
-VALID_API_KEYS = os.getenv("VALID_API_KEYS", "").split(",") if os.getenv("VALID_API_KEYS") else []
+def get_valid_api_keys():
+    """获取有效的API密钥列表"""
+    # 检查是否完全禁用安全验证
+    if os.getenv("API_SECURITY_DISABLED", "").lower() == "true":
+        return []  # 空列表表示禁用API密钥验证
+
+    keys_str = os.getenv("VALID_API_KEYS", "").strip()
+    if not keys_str:
+        return []  # 空列表表示禁用API密钥验证
+    return [key.strip() for key in keys_str.split(",") if key.strip()]
+
+VALID_API_KEYS = get_valid_api_keys()
 
 # 开发环境的默认密钥（生产环境必须设置环境变量）
 DEFAULT_DEV_KEY = "dev-key-please-change-in-production"
-if not VALID_API_KEYS:
-    logger.warning("⚠️ 使用开发环境默认API密钥，生产环境请设置VALID_API_KEYS环境变量")
-    VALID_API_KEYS.append(DEFAULT_DEV_KEY)
+if os.getenv("API_SECURITY_DISABLED", "").lower() == "true":
+    logger.info("🔓 安全验证已完全禁用（API_SECURITY_DISABLED=true）")
+elif not VALID_API_KEYS:
+    logger.info("🔓 开发模式：API密钥验证已禁用")
+else:
+    logger.info(f"🔒 生产模式：已配置 {len(VALID_API_KEYS)} 个API密钥")
 
 # IP白名单配置
 ALLOWED_IPS = os.getenv("ALLOWED_IPS", "").split(",") if os.getenv("ALLOWED_IPS") else []
@@ -34,6 +48,11 @@ rate_limit_store = {}
 
 async def verify_api_key(api_key: Optional[str] = Security(API_KEY_HEADER)):
     """验证API密钥"""
+    # 如果没有配置有效的API密钥，则跳过验证（开发环境）
+    if not VALID_API_KEYS:
+        logger.info(f"🔓 开发模式：API密钥验证已禁用 (VALID_API_KEYS={VALID_API_KEYS})")
+        return None
+
     if api_key is None:
         logger.warning("🚫 API访问被拒绝：缺少API密钥")
         raise HTTPException(
@@ -48,8 +67,13 @@ async def verify_api_key(api_key: Optional[str] = Security(API_KEY_HEADER)):
             detail="无效的API密钥"
         )
 
-    logger.info(f"✅ API密钥验证成功")
+    logger.info(f"✅ API密钥验证通过")
     return api_key
+
+async def skip_api_key_verification():
+    """跳过API密钥验证（开发环境）"""
+    logger.info("🔓 跳过API密钥验证 - 函数被调用")
+    return None
 
 async def verify_ip_access(client_ip: str) -> bool:
     """验证IP访问权限"""

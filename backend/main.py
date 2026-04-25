@@ -23,14 +23,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request, Depends
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request, Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.encoders import jsonable_encoder
 
 # 导入安全配置
-from config.security import verify_api_key, verify_ip_access, check_rate_limit, get_client_ip
+from config.security import verify_api_key, verify_ip_access, check_rate_limit, get_client_ip, skip_api_key_verification, VALID_API_KEYS
+
+# 根据环境变量选择API密钥验证函数
+def get_api_key_dependency():
+    """根据配置返回适当的API密钥验证依赖"""
+    logger.info(f"🔍 get_api_key_dependency调用: VALID_API_KEYS={VALID_API_KEYS}")
+    if not VALID_API_KEYS:
+        logger.info("✅ 使用skip_api_key_verification")
+        return skip_api_key_verification
+    logger.info("✅ 使用verify_api_key")
+    return verify_api_key
+
+api_key_dependency = get_api_key_dependency()
 
 # ========== 创建FastAPI应用 ==========
 
@@ -162,11 +174,27 @@ async def health_check():
 
 @app.post("/api/chat")
 async def chat_endpoint(
-    request: Request,
-    api_key: str = Depends(verify_api_key)
+    request: Request
 ):
     """智能问答接口（基于文档检索 + DeepSeek API）"""
+    logger.info(f"🔧 chat_endpoint被调用，VALID_API_KEYS={VALID_API_KEYS}")
     try:
+        # API密钥验证（如果配置了）
+        if VALID_API_KEYS:
+            api_key = request.headers.get("X-API-Key")
+            if not api_key:
+                raise HTTPException(
+                    status_code=401,
+                    detail="API密钥缺失，请在请求头中提供 X-API-Key"
+                )
+            if api_key not in VALID_API_KEYS:
+                raise HTTPException(
+                    status_code=403,
+                    detail="无效的API密钥"
+                )
+        else:
+            logger.info("🔓 跳过API密钥验证")
+
         # IP访问验证
         client_ip = get_client_ip(request)
         await verify_ip_access(client_ip)
@@ -229,11 +257,25 @@ async def chat_endpoint(
 @app.post("/api/ingest")
 async def ingest_document(
     request: Request,
-    file: UploadFile = File(...),
-    api_key: str = Depends(verify_api_key)
+    file: UploadFile = File(...)
 ):
     """文档入库到知识库"""
     try:
+        # API密钥验证（如果配置了）
+        if VALID_API_KEYS:
+            api_key = request.headers.get("X-API-Key")
+            if not api_key:
+                raise HTTPException(
+                    status_code=401,
+                    detail="API密钥缺失，请在请求头中提供 X-API-Key"
+                )
+            if api_key not in VALID_API_KEYS:
+                raise HTTPException(
+                    status_code=403,
+                    detail="无效的API密钥"
+                )
+        else:
+            logger.info("🔓 跳过API密钥验证")
         # IP访问验证
         client_ip = get_client_ip(request)
         await verify_ip_access(client_ip)
